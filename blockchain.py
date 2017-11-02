@@ -3,13 +3,15 @@ import hashlib
 import json
 from time import time
 from uuid import uuid4
+# from urllib.parse import urlparse
 
-from flask import Flask, jsonify, request
+# from flask import Flask, jsonify, request
 
 class Blockchain(object):
     def __init__(self):
         self.chain = []
         self.current_transactions = []
+        self.nodes = set()
 
         self.new_block(proof=100, previous_hash=1)
         
@@ -96,66 +98,71 @@ class Blockchain(object):
         guess_hash = hashlib.sha256(guess).hexdigest()
         return guess_hash[:4] == "0000"
 
+    def register_node(self,address):
+        """
+        Add a new node to the list of nodes
+        :param address: <str> Address of node. Eg. 'http://192.168.0.5:5000'
+        :return: None
+        """
+        parsed_url = urlparse(address)
+        self.nodes.add(parsed_url.netloc)
 
-# Instantiate our Node
-app = Flask(__name__)
+    def valid_chain(self,chain):
+        """
+        Determine if a given blockchain is valid
+        :param chain: <list> A blockchain
+        :return: <bool> True if valid, False if not
+        """
+        last_block = chain[0]
+        current_index = 1
+        while current_index < len(chain):
+            block = chain[current_index]
+            print '{}'.format(last_block)
+            print '{}'.format(block)
+            print '\n-------------\n'
 
-# Generate a globally unique address for this node
-node_identifier = str(uuid4()).replace('-','')
+            # Check that the hash of the block is correct
+            if block['previous_hash'] != self.hash(last_block):
+                return False
 
-# Instanciate the blockchain
-blockchain = Blockchain()
+            # Check if the proof of work is correct
+            if not self.valid_proof(last_block['proof'],block['proof']):
+                return False
 
-@app.route('/mine',methods=['GET'])
-def mine():
-    # We run proof of work algo to get the next proof
-    last_block = blockchain.last_block
-    last_proof = last_block['proof']
-    proof = blockchain.proof_of_work(last_proof)
+            last_block = block
+            current_index += 1
+        return True
+        
+    def resolve_conflict(self):
+        """
+        This is our Consensus Algorithm, it resolves conflicts
+        by replacing our chain with the longest one in the network.
+        :return: <bool> True if our chain was replaced, False if not
+        """
 
-    # We must recieve reward for finding proof.
-    # The sender is "0" to signify that this node has mined a new coin
-    blockchain.new_transaction(
-        sender="0",
-        recipient=node_identifier,
-        amount=1
-    )
+        neighboors = self.nodes
+        new_chain = None
 
-    # Forge the new block by adding it to the chain
-    block = blockchain.new_block(proof)
+        # We're looking for chains longer than ours
+        max_length = len(self.chain)
 
-    response = {
-        'message': "New Block Forged",
-        'index': block['index'],
-        'transactions': block['transactions'],
-        'proof': block['proof'],
-        'previous_hash': block['previous_hash'],
-    }
-    
-    return jsonify(response), 200
+        #grab and verify the chains from all the nodes in our network
+        for node in neighboors:
+            response = requests.get("http://{}/chain".format(node))
 
-@app.route('/transactions/new',methods=['POST'])
-def new_transaction():
-    values = request.get_json()
+            if response.status_code == 200:
+                length = response.jons()['length']
+                chain = response.json()['chain']
 
-    # Check that the required fields are in the POST'ed data
-    required = ['sender','recipient','amount']
-    if not all(k in values for k in required):
-        return 'Missing values', 400
+                # Check if the length is longr and the chain IISCGIHandler
+                if length > max_length and self.vald_chain(chain):
+                    max_length = length
+                    new_chain = chain
 
-    # Create new Transaction
-    index = blockchain.new_transaction(values['sender'],values['recipient'],values['amount'])
+        # REplace our chain if we discovered a new, valid cahin linger than ours
+        if new_chain:
+            self.chain = new_chain
+            return True
 
-    response = {'message':"Transaction will be added to block {}".format(index)}
-    return jsonify(response), 201
+        return False
 
-@app.route('/chain',methods=['GET'])
-def full_chain():
-    response = {
-        'chain':blockchain.chain,
-        'length':len(blockchain.chain)
-    }
-    return jsonify(response), 200
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0',port=5000)
